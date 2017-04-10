@@ -5,15 +5,15 @@
  *  - A captive Portal to setup wifi connection
  *  - a preference set route to store: 
  *      - a new hostname
- *      - a post url 
- *  - a route to get the current date
+ *		- a callback url 
  *  - a route to reset the eeprom
  *  - routes to set the switch on and off
+ *  - routes to trigger the control led
  *
  *
  */
  
- 
+
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 #include "WiFiManager.h"          //https://github.com/tzapu/WiFiManager
 #include <DNSServer.h>
@@ -24,13 +24,14 @@
 #include <ESP8266mDNS.h>
 
 // Controll LED
-const int led = 5;
+const int LED = 12;
 
 // SIPO
 const int SER = 2;
 const int RCLK = 13;
 const int SRCLK = 14;
 const int SRCLR = 16;
+const float STIME = 0.7;
 
 // Storage EEPROM Adress
 int eepromNameAddress = 0;
@@ -41,9 +42,13 @@ os_timer_t myTimer;
 volatile bool tickOccured;
 volatile bool toggle;
 
+// Wifi
 WiFiManager wifiManager;
 WiFiClient client;
 ESP8266WebServer server ( 80 );
+
+// SWITCHMASK
+volatile int16_t powermask = 65535;
 
 // Captive Portal Callback
 // =======================================================================================
@@ -63,26 +68,38 @@ void timerCallback(void *pArg) {
 // SIPO
 // =======================================================================================
 void storeValue(int16_t value) {
+	powermask = value;
+    digitalWrite(LED, 0);
     digitalWrite(SRCLR, 0);
-    delay(0.6);
+    delay(STIME);
     digitalWrite(SRCLR, 1);
-    delay(0.6);
+    delay(STIME);
     for(int i=0; i<=16; i++){
       digitalWrite(SER, value >> i & 1);
       digitalWrite(SRCLK, 1);
-      delay(0.6
-      );
+      delay(STIME);
       digitalWrite(SRCLK, 0);
+      delay(STIME);
     }
     digitalWrite(RCLK, 1);
-    delay(0.6);
+    delay(STIME);
     digitalWrite(RCLK, 0);
+    digitalWrite(LED, 1);
 }
-
 
 // ROUTE to /
 // =======================================================================================
 void handleRoot() {
+	digitalWrite ( LED, 0 );
+	server.send ( 200, "application/text", "Hello." );
+	digitalWrite ( LED, 1 );
+}
+
+
+// ROUTE to /info
+// =======================================================================================
+void handleInfo() {
+	digitalWrite ( LED, 0 );
     char temp[400];
     int sec = millis() / 1000;
     int min = sec / 60;
@@ -92,17 +109,19 @@ void handleRoot() {
 "{ \
   \"title\": \"%s\", \
   \"uptime\": \"%02d:%02d:%02d\", \
-  \"mac\": \"%s\" \
+  \"mac\": \"%s\", \
+  \"mask\": \"%i\" \  
 }",
-    WiFi.hostname().c_str(), hr, min % 60, sec % 60, WiFi.macAddress().c_str());
+    WiFi.hostname().c_str(), hr, min % 60, sec % 60, WiFi.macAddress().c_str(), powermask);
     server.send ( 200, "application/json", temp );
+    digitalWrite ( LED, 1 );
 }
 
 
 // ROUTE to /set
 // =======================================================================================
 void setPreferences(){
-    //digitalWrite ( led, 1 );
+    digitalWrite ( LED, 0 );
     char temp[400];
     String hostname = server.arg("hostname");
     if( hostname.length() > 0 ){
@@ -121,15 +140,16 @@ void setPreferences(){
 }",
     WiFi.hostname().c_str());
     server.send ( 200, "application/json", temp );
-    //digitalWrite ( led, 0 );
+    digitalWrite ( LED, 1 );
     // Reboot
     ESP.reset();
     delay(1000);
 }
 
-// ROUTE to /switch
+// ROUTE to /mask
 // =======================================================================================
-void setSwitch(){
+void setMask(){
+	digitalWrite ( LED, 0 );
     char temp[400];
     String v = server.arg("v");
     if( v.length() > 0 ){
@@ -145,12 +165,47 @@ void setSwitch(){
 }",
     v.c_str());
     server.send ( 200, "application/json", temp );
+    digitalWrite ( LED, 1 );
 }
+
+// ROUTE to /switch
+// =======================================================================================
+void setSwitch(){
+	digitalWrite ( LED, 0 );
+    char temp[400];
+    String s = server.arg("s");
+    String v = server.arg("v");
+    if( s.length() > 0 && v.length() > 0 ){
+        int16_t si = atoi( s.c_str() );
+        int16_t vi = atoi( v.c_str() );
+        if(si >= 16){
+	        server.send ( 400, "application/text", "s must be < than 16" );
+    		  return;
+        }
+        if(vi != 0 && vi != 1){
+	        server.send ( 400, "application/text", "v must be 0 or 1" );
+    		  return;
+        }
+        powermask |= vi << si;
+    } else {
+    	server.send ( 400, "application/text", "Missing s or v or both." );
+    	return;
+    }
+
+    snprintf ( temp, 400,
+"{ \
+  \"mask\": \"%i\" \
+}",
+    powermask);
+    server.send ( 200, "application/json", temp );
+    digitalWrite ( LED, 1 );
+}
+
 
 // 404
 // =======================================================================================  
 void handleNotFound() {
-    //digitalWrite ( led, 1 );
+    digitalWrite ( LED, 0 );
     String message = "File Not Found\n\n";
     message += "URI: ";
     message += server.uri();
@@ -163,21 +218,22 @@ void handleNotFound() {
         message += " " + server.argName ( i ) + ": " + server.arg ( i ) + "\n";
     }
     server.send ( 404, "text/plain", message );
-    //digitalWrite ( led, 0 );
+    digitalWrite ( LED, 1 );
 }
 
 // System Setup
 // ======================================================================================= 
 void setup() {
     Serial.begin(115200);
-    pinMode ( led, OUTPUT );
+    pinMode ( LED, OUTPUT );
+    digitalWrite(LED, 0);
 
     // SIPO
     pinMode ( SRCLR, OUTPUT );
     pinMode ( SRCLK, OUTPUT );
     pinMode ( RCLK, OUTPUT );
     pinMode ( SER, OUTPUT );
-    storeValue(0);  // shut down all switches
+    storeValue(65535);  // 2^16 -1 shut down all switches
     
     EEPROM.begin(4096);
     
@@ -221,20 +277,23 @@ void setup() {
 
     // Routes
     server.on ( "/", handleRoot );
+    server.on ( "/info", handleInfo );
     
     server.on ( "/on", []() {
-        digitalWrite ( led, 1 );
+        digitalWrite ( LED, 1 );
         server.send(200, "application/json", "{\"led\": true}");
     });
     
     server.on ( "/off", []() {
-        digitalWrite ( led, 0 );
+        digitalWrite ( LED, 0 );
         server.send(200, "application/json", "{\"led\": false}");
     });
 
-  server.on ( "/switch", setSwitch );
+	server.on ( "/mask", setMask );
+    server.on ( "/switch", setSwitch );
     
     server.on("/reset", []() {
+    	digitalWrite ( LED, 0 );
         Serial.println("clearing eeprom");
         for (int i = 0; i < 4096; ++i) { EEPROM.write(i, 0); Serial.print("x"); }
         Serial.println("clearing done.");
@@ -252,10 +311,11 @@ void setup() {
     
     server.begin();
     Serial.println ( "HTTP server started" );
-
     Serial.println( "Switch started." );
-    
     tickOccured = true;
+
+	// OK, led on
+    digitalWrite ( LED, 1 );
 }
 
 // MAINLOOP
@@ -264,7 +324,6 @@ void loop() {
     server.handleClient();
     if (tickOccured == true) {
       toggle = (toggle ^ 1) & 1;
-      digitalWrite ( led, toggle );
       tickOccured = false;
     }
     yield();
