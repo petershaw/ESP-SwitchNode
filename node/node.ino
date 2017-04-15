@@ -12,7 +12,6 @@
  *
  *
  */
- 
 
 #include <ESP8266WiFi.h>          //https://github.com/esp8266/Arduino
 #include "WiFiManager.h"          //https://github.com/tzapu/WiFiManager
@@ -48,7 +47,7 @@ WiFiClient client;
 ESP8266WebServer server ( 80 );
 
 // SWITCHMASK
-volatile int16_t powermask = 65535;
+volatile uint16_t powermask = UINT16_MAX;
 
 // Captive Portal Callback
 // =======================================================================================
@@ -67,20 +66,26 @@ void timerCallback(void *pArg) {
 
 // SIPO
 // =======================================================================================
-void storeValue(int16_t value) {
+void storeValue(uint16_t value) {
 	powermask = value;
     digitalWrite(LED, 0);
+    digitalWrite(RCLK, 0);
+    // clear
     digitalWrite(SRCLR, 0);
     delay(STIME);
     digitalWrite(SRCLR, 1);
     delay(STIME);
-    for(int i=0; i<=16; i++){
-      digitalWrite(SER, value >> i & 1);
-      digitalWrite(SRCLK, 1);
-      delay(STIME);
+
+    // pump data in 
+    for(int i=0; i<16; i++){
       digitalWrite(SRCLK, 0);
       delay(STIME);
+      digitalWrite(SER, (value) >> i & 1);
+      digitalWrite(SRCLK, 1);
+      delay(STIME);
+
     }
+    // store
     digitalWrite(RCLK, 1);
     delay(STIME);
     digitalWrite(RCLK, 0);
@@ -153,7 +158,7 @@ void setMask(){
     char temp[400];
     String v = server.arg("v");
     if( v.length() > 0 ){
-        int16_t f = atoi( v.c_str() );
+        uint16_t f = atoi( v.c_str() );
          storeValue(f);
     } else {
       storeValue(0);
@@ -178,7 +183,8 @@ void setSwitch(){
     if( s.length() > 0 && v.length() > 0 ){
         int16_t si = atoi( s.c_str() );
         int16_t vi = atoi( v.c_str() );
-        if(si >= 16){
+        si--;
+        if(si > 16){
 	        server.send ( 400, "application/text", "s must be < than 16" );
     		  return;
         }
@@ -186,7 +192,20 @@ void setSwitch(){
 	        server.send ( 400, "application/text", "v must be 0 or 1" );
     		  return;
         }
-        powermask |= vi << si;
+        if(vi == 1){
+          powermask |= (1 << si);
+        } else {
+          powermask &= ~(1 << si);
+        }
+        storeValue(powermask);
+        
+        Serial.print( "Set Switch: " );
+        Serial.print( si );
+        Serial.print( "=" );
+        Serial.print( vi );
+        Serial.print( " maks: " );
+        Serial.print( powermask );
+        Serial.println( "" );
     } else {
     	server.send ( 400, "application/text", "Missing s or v or both." );
     	return;
@@ -233,7 +252,7 @@ void setup() {
     pinMode ( SRCLK, OUTPUT );
     pinMode ( RCLK, OUTPUT );
     pinMode ( SER, OUTPUT );
-    storeValue(65535);  // 2^16 -1 shut down all switches
+    storeValue(UINT16_MAX);  // 2^16 -1 shut down all switches
     
     EEPROM.begin(4096);
     
