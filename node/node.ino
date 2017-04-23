@@ -49,6 +49,42 @@ ESP8266WebServer server ( 80 );
 // SWITCHMASK
 volatile uint16_t powermask = UINT16_MAX;
 
+// timed auto switch
+// =======================================================================================
+typedef struct timedSwitch {
+    int secleft;
+    uint16_t switchno;
+    int value;
+    struct timedSwitch *next;
+} timedswitch_t;
+timedswitch_t * timedSwitchHead = NULL;
+
+void pushAutoSwitch(timedswitch_t *head, int sec, uint16_t sw, int val) {
+	if(timedSwitchHead == NULL){
+    Serial.println( "Initial timedSwitchHead" );
+		timedSwitchHead = (timedswitch_t*) malloc(sizeof(timedswitch_t));
+		timedSwitchHead->secleft = sec;
+		timedSwitchHead->switchno = sw;
+		timedSwitchHead->value = val;
+		timedSwitchHead->next = NULL;
+		return;
+	}
+	
+    timedswitch_t *current = timedSwitchHead;
+    while (current->next != NULL) {
+        current = current->next;
+    }
+    Serial.println( "Append timedSwitchHead" );
+  
+    /* now we can add a new variable */
+    current->next = (timedswitch_t*) malloc(sizeof(timedswitch_t));
+    current->next->secleft = sec;
+	  current->next->switchno = sw;
+    current->next->value = val;
+    current->next->next = NULL;
+}
+
+
 // Captive Portal Callback
 // =======================================================================================
 void configModeCallback (WiFiManager *myWiFiManager) {
@@ -96,7 +132,9 @@ void storeValue(uint16_t value) {
 // =======================================================================================
 void handleRoot() {
 	digitalWrite ( LED, 0 );
-	server.send ( 200, "application/text", "Hello." );
+	char temp[400];
+	snprintf ( temp, 400, "%s", WiFi.hostname().c_str() );
+	server.send ( 200, "application/text", temp );
 	digitalWrite ( LED, 1 );
 }
 
@@ -180,9 +218,11 @@ void setSwitch(){
     char temp[400];
     String s = server.arg("s");
     String v = server.arg("v");
+    String t = server.arg("t");
     if( s.length() > 0 && v.length() > 0 ){
         int16_t si = atoi( s.c_str() );
-        int16_t vi = atoi( v.c_str() );
+        int vi = atoi( v.c_str() );
+        int ti = 0;
         si--;
         if(si > 16){
 	        server.send ( 400, "application/text", "s must be < than 16" );
@@ -199,12 +239,22 @@ void setSwitch(){
         }
         storeValue(powermask);
         
+        if( t.length() > 0 ){
+	        ti = atoi( t.c_str() );
+	        pushAutoSwitch(timedSwitchHead, ti, si, vi );
+        }
+        
         Serial.print( "Set Switch: " );
         Serial.print( si );
         Serial.print( "=" );
         Serial.print( vi );
         Serial.print( " maks: " );
         Serial.print( powermask );
+        if( t.length() > 0 ){
+        	Serial.print( ", (" );
+        	Serial.print( ti );
+        	Serial.print( " sec)" );
+        }
         Serial.println( "" );
     } else {
     	server.send ( 400, "application/text", "Missing s or v or both." );
@@ -343,7 +393,45 @@ void loop() {
     server.handleClient();
     if (tickOccured == true) {
       toggle = (toggle ^ 1) & 1;
+      
+      
+      // count down auto switch
+      timedswitch_t *current = timedSwitchHead;
+      timedswitch_t *previous = NULL;
+      while (current != NULL) {
+          current->secleft -= 1;
+          
+          Serial.print( "AutoSwitch: " );
+          Serial.print( current->switchno );
+          Serial.print( " turn to " );
+          Serial.print( current->value );
+          Serial.print( " in " );
+          Serial.print( current->secleft );
+          Serial.println( " seconds." );
+          
+        if(current->secleft <= 0){
+        	// switch 
+        	if(current->value == 0){
+	          powermask |= (1 << current->switchno);
+    	    } else {
+        	  powermask &= ~(1 << current->switchno);
+	        }
+    	    storeValue(powermask);
+    	    
+        	// remove node
+        	if(previous == NULL){
+        		timedSwitchHead = current->next;
+        		free(current);
+        	} else {
+        		previous->next = current->next;
+        		free(current);
+        	}
+        }
+        previous = current;
+		    current = current->next;
+      }
       tickOccured = false;
+      
     }
     yield();
 }
